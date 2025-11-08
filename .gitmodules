@@ -7,3 +7,6 @@
 [submodule "lib/hookmate"]
 	path = lib/hookmate
 	url = https://github.com/akshatmittal/hookmate
+[submodule "lib/octant-v2-core"]
+	path = lib/octant-v2-core
+	url = https://github.com/golemfoundation/octant-v2-core
