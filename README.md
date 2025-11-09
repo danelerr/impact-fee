@@ -51,7 +51,7 @@ Strategy reports yield to Octant V2
 Public goods receive funding
 ```
 
-**See [FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md) for detailed visual architecture.**
+**📊 See [FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md) for detailed architecture with visual diagram.**
 
 ---
 
@@ -104,19 +104,6 @@ contract ImpactFeeYieldStrategy is BaseStrategy {
 - **Foundry** (Testing/Deployment)
 - **Tenderly** (Mainnet Fork)
 
----
-
-## 🏆 Hackathon Submission
-
-This project was built for:
-- ✅ **Best Use of Uniswap V4 Hooks** - beforeSwap fee mechanism
-- ✅ **Best Use of Yield Donating Strategy** - BaseStrategy integration
-- ✅ **Most Creative Use of Octant V2** - Passive public goods funding from trading
-- ✅ **Best Team from Dev3pack** - Solo development
-
-See [SUBMISSION.md](./SUBMISSION.md) for full submission details.
-
----
 
 ## 📚 Documentation
 
@@ -179,7 +166,6 @@ MIT
 - ✅ ERC4626 vault receiving fees
 - ✅ Octant V2 BaseStrategy integration
 - ✅ Shares sent to donation receiver
-- ✅ 29/30 tests passing
 
 ## 🚀 Quick Demo
 
