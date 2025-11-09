@@ -41,6 +41,9 @@ contract ImpactFeeHook is BaseHook {
 
     /// @notice Owner/governance address
     address public immutable owner;
+    
+    /// @notice Address that receives vault shares (donations/impact)
+    address public immutable donationReceiver;
 
     /// @notice Basis points denominator (10000 = 100%)
     uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -133,8 +136,15 @@ contract ImpactFeeHook is BaseHook {
      * @param feeSink_ The ERC4626 vault to receive fees
      * @param impactFeeBps_ Initial impact fee in basis points
      * @param owner_ The owner/governance address
+     * @param donationReceiver_ Address that receives vault shares
      */
-    constructor(IPoolManager poolManager_, IERC4626 feeSink_, uint256 impactFeeBps_, address owner_)
+    constructor(
+        IPoolManager poolManager_, 
+        IERC4626 feeSink_, 
+        uint256 impactFeeBps_, 
+        address owner_,
+        address donationReceiver_
+    )
         BaseHook(poolManager_)
     {
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
@@ -143,6 +153,7 @@ contract ImpactFeeHook is BaseHook {
         feeSink = feeSink_;
         impactFeeBps = uint16(impactFeeBps_);
         owner = owner_;
+        donationReceiver = donationReceiver_;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -308,7 +319,8 @@ contract ImpactFeeHook is BaseHook {
 
         IERC20(token).forceApprove(address(feeSink), feeAmount);
         
-        feeSink.deposit(feeAmount, address(this));
+        // Deposit to vault and send shares to donationReceiver (Octant/YDTS)
+        feeSink.deposit(feeAmount, donationReceiver);
 
         unchecked { 
             feesCollected[poolId][currency] += feeAmount; 

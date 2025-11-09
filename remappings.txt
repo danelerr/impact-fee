@@ -9,6 +9,8 @@ v4-periphery/=lib/uniswap-hooks/lib/v4-periphery/
 @openzeppelin/contracts/=lib/uniswap-hooks/lib/v4-core/lib/openzeppelin-contracts/contracts/
 
 @octant-core/=lib/octant-v2-core/src/dragons/vaults/
+src/interfaces/=src/interfaces/
+src/errors.sol=src/errors.sol
 
 hookmate/=lib/hookmate/src/
 permit2/=lib/uniswap-hooks/lib/v4-periphery/lib/permit2/

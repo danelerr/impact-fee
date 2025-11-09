@@ -50,6 +50,7 @@ contract OctantYDSTest is BaseTest {
     int24 tickUpper;
     
     uint128 constant LIQUIDITY_AMOUNT = 10e18;
+    uint256 constant IMPACT_FEE_BPS = 10;
     
     function setUp() public {
         // Deploy Uniswap V4 infrastructure
@@ -75,7 +76,13 @@ contract OctantYDSTest is BaseTest {
             uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG) ^ (0x4444 << 144)
         );
         
-        bytes memory constructorArgs = abi.encode(address(poolManager), address(vault));
+        bytes memory constructorArgs = abi.encode(
+            address(poolManager), 
+            address(vault), 
+            IMPACT_FEE_BPS, 
+            governance,
+            donationAddress
+        );
         deployCodeTo("ImpactFeeHook.sol:ImpactFeeHook", constructorArgs, flags);
         hook = ImpactFeeHook(flags);
         

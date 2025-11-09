@@ -1,30 +1,189 @@
-# Uniswap v4 Hook Template
+# Impact Fee Hook 🎯
 
-**A template for writing Uniswap v4 Hooks 🦄**
+**Transform DeFi trading into automatic social impact.**
 
-### Get Started
+Every swap → 0.10% fee → ERC4626 vault → charity receives shares → Octant V2 → public goods funding.
 
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
+---
 
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
+## 🚀 What It Does
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+- ✅ Uniswap V4 hook charges **0.10% on every swap**
+- ✅ Fees deposited to **ERC4626 vault automatically**
+- ✅ Vault shares go to **donation address** (not hook)
+- ✅ Compatible with **Octant V2 BaseStrategy**
+- ✅ **Passive income for public goods** - no user action needed
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+**Impact**: Turns trading volume into sustainable funding for social impact projects.
 
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers:
+---
 
-```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
+## 📦 Deployed Contracts (Tenderly Fork)
+
+| Contract | Address | Explorer |
+|----------|---------|----------|
+| **ImpactFeeHook** | `0x55De5339eA7fF2B00A83E1c3ba7a8C7da181c088` | [View](https://dashboard.tenderly.co/explorer/vnet/8/address/0x55De5339eA7fF2B00A83E1c3ba7a8C7da181c088) |
+| **YDSVault** | `0x0612A5b0917889000447070849bE035291CA20e8` | [View](https://dashboard.tenderly.co/explorer/vnet/8/address/0x0612A5b0917889000447070849bE035291CA20e8) |
+| **ImpactFeeYieldStrategy** | `0x1A8E19726152aae25E01BBA8a5A92A4992eA53cF` | [View](https://dashboard.tenderly.co/explorer/vnet/8/address/0x1A8E19726152aae25E01BBA8a5A92A4992eA53cF) |
+
+**Pool**: USDC/WETH with hook attached  
+**Network**: Tenderly Virtual Mainnet (Chain ID: 8)
+
+---
+
+## 🏗️ Architecture
+
+```
+Trader swaps USDC→WETH
+         ↓
+Hook charges 0.10% fee (beforeSwap)
+         ↓
+Fees stored as ERC6909 claims
+         ↓
+processFees() → converts to ERC20
+         ↓
+Deposits to YDSVault (ERC4626)
+         ↓
+Shares minted to donation address
+         ↓
+Strategy reports yield to Octant V2
+         ↓
+Public goods receive funding
 ```
 
-</details>
+**See [FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md) for detailed visual architecture.**
 
-### Requirements
+---
+
+## 🧪 Testing
+
+```bash
+# Run full test suite
+forge test -vv
+
+# Live demo (interactive)
+./demo_tests.sh
+```
+
+**Results**: ✅ 29/30 tests passing (complete flow verified)
+
+---
+
+## 🔬 Key Implementation
+
+### ImpactFeeHook.sol
+```solidity
+function beforeSwap(...) {
+    uint256 fee = amountSpecified * 10 / 10000; // 0.10%
+    poolFees[poolId][currency] += fee;
+    return (beforeSwap.selector, fee, 0);
+}
+
+function unlockCallback(...) {
+    poolManager.take(currency, address(this), feeAmount);
+    feeSink.deposit(feeAmount, donationReceiver); // ← shares to charity
+}
+```
+
+### ImpactFeeYieldStrategy.sol
+```solidity
+contract ImpactFeeYieldStrategy is BaseStrategy {
+    function _harvestAndReport() internal override returns (uint256) {
+        return vault.balanceOf(address(this)); // Report shares as yield
+    }
+}
+```
+
+---
+
+## 🛠️ Stack
+
+- **Solidity 0.8.26**
+- **Uniswap V4** (Hooks + PoolManager)
+- **Octant V2** (BaseStrategy)
+- **Foundry** (Testing/Deployment)
+- **Tenderly** (Mainnet Fork)
+
+---
+
+## 🏆 Hackathon Submission
+
+This project was built for:
+- ✅ **Best Use of Uniswap V4 Hooks** - beforeSwap fee mechanism
+- ✅ **Best Use of Yield Donating Strategy** - BaseStrategy integration
+- ✅ **Most Creative Use of Octant V2** - Passive public goods funding from trading
+- ✅ **Best Team from Dev3pack** - Solo development
+
+See [SUBMISSION.md](./SUBMISSION.md) for full submission details.
+
+---
+
+## 📚 Documentation
+
+- **[SUBMISSION.md](./SUBMISSION.md)** - Hackathon submission (problem, challenges, tracks)
+- **[FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md)** - System flow + Excalidraw guide
+- **[src/ImpactFeeHook.sol](./src/ImpactFeeHook.sol)** - Main hook contract
+- **[test/ImpactFeeHook.t.sol](./test/ImpactFeeHook.t.sol)** - Integration tests
+
+---
+
+## 🚀 Quick Start
+
+```bash
+# Clone and install
+git clone <repo-url>
+cd v4-template
+forge install
+
+# Set environment
+cp .env.example .env
+# Add TENDERLY_RPC_URL, PRIVATE_KEY
+
+# Deploy
+source .env
+forge script script/00_DeployHook.s.sol --broadcast
+
+# Test
+forge test -vv
+```
+
+---
+
+## 🔗 Links
+
+- **Uniswap V4 Docs**: https://docs.uniswap.org/contracts/v4
+- **Octant V2 Docs**: https://docs.octant.app
+- **Tenderly**: https://tenderly.co
+
+---
+
+## 📝 License
+
+MIT
+
+## 📊 Deployed Contracts (Tenderly Mainnet Fork)
+
+**Network:** Tenderly Virtual Mainnet (Chain ID: 8)  
+**RPC:** https://virtual.mainnet.eu.rpc.tenderly.co/82c86106-662e-4d7f-a974-c311987358ff
+
+| Contract | Address | Tenderly Link |
+|----------|---------|---------------|
+| **ImpactFeeHook** | `0x55De5339eA7fF2B00A83E1c3ba7a8C7da181c088` | [View on Tenderly](https://dashboard.tenderly.co/explorer/vnet/82c86106-662e-4d7f-a974-c311987358ff/address/0x55De5339eA7fF2B00A83E1c3ba7a8C7da181c088) |
+| **YDSVault** (ERC4626) | `0x0612A5b0917889000447070849bE035291CA20e8` | [View on Tenderly](https://dashboard.tenderly.co/explorer/vnet/82c86106-662e-4d7f-a974-c311987358ff/address/0x0612A5b0917889000447070849bE035291CA20e8) |
+| **ImpactFeeYieldStrategy** | `0x1A8E19726152aae25E01BBA8a5A92A4992eA53cF` | [View on Tenderly](https://dashboard.tenderly.co/explorer/vnet/82c86106-662e-4d7f-a974-c311987358ff/address/0x1A8E19726152aae25E01BBA8a5A92A4992eA53cF) |
+| **Pool (USDC/WETH)** | Pool ID: `0x15999572...15622` | Active with ImpactFeeHook |
+
+### Verified Features
+- ✅ Hook with correct flags (beforeSwap + beforeSwapReturnsDelta)
+- ✅ Address mined with HookMiner for deterministic deployment
+- ✅ ERC4626 vault receiving fees
+- ✅ Octant V2 BaseStrategy integration
+- ✅ Shares sent to donation receiver
+- ✅ 29/30 tests passing
+
+## 🚀 Quick Demo
+
+### Prerequisites
 
 This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
 

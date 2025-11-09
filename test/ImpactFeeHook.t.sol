@@ -123,7 +123,8 @@ contract ImpactFeeHookTest is BaseTest {
             poolManager, // IPoolManager
             vault, // YDSVault
             IMPACT_FEE_BPS, // impactFeeBps (0.1%)
-            governance // owner
+            governance, // owner
+            charity // donation receiver
         );
 
         deployCodeTo("ImpactFeeHook.sol:ImpactFeeHook", constructorArgs, flags);
@@ -548,7 +549,8 @@ contract ImpactFeeHookTest is BaseTest {
             poolManager,
             vault,
             501, // > MAX_IMPACT_FEE_BPS (500)
-            governance
+            governance,
+            charity
         );
         
         vm.expectRevert(ImpactFeeHook.InvalidFee.selector);

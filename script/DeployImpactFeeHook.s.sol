@@ -1,187 +1,88 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {Script} from "forge-std/Script.sol";
-import {console} from "forge-std/console.sol";
+import {Script, console2 as console} from "forge-std/Script.sol";
+
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {ImpactFeeHook} from "../src/ImpactFeeHook.sol";
 import {YDSVault} from "../src/YDSVault.sol";
 
-/**
- * @title DeployImpactFeeHook
- * @notice Deployment script for the Impact Fee Hook and YDS Vault
- * @dev Use with: forge script script/DeployImpactFeeHook.s.sol --rpc-url $RPC_URL --broadcast
- * 
- * Environment Variables Required:
- * - RPC_URL: The RPC endpoint for the network
- * - PRIVATE_KEY: Deployer private key (or use --ledger, --trezor)
- * - POOL_MANAGER: Address of the Uniswap V4 PoolManager
- * - VAULT_ASSET: Address of the ERC20 token for the vault
- * - DONATION_ADDRESS: Address to receive donation shares
- * - GOVERNANCE: Address with governance rights
- */
 contract DeployImpactFeeHook is Script {
-    // Configuration
-    uint256 constant IMPACT_FEE_BPS = 10; // 0.1%
-    string constant VAULT_NAME = "Impact Vault";
-    string constant VAULT_SYMBOL = "ivToken";
+    // Deployer determinístico de Foundry para CREATE2 en scripts
+    address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
     function run() external {
-        // Read environment variables
-        address poolManager = vm.envAddress("POOL_MANAGER");
-        address vaultAsset = vm.envAddress("VAULT_ASSET");
+        // === Lee ENV ===
+        address poolManager     = vm.envAddress("POOL_MANAGER");
+        address vaultAsset      = vm.envAddress("VAULT_ASSET");
         address donationAddress = vm.envAddress("DONATION_ADDRESS");
-        address governance = vm.envAddress("GOVERNANCE");
+        address governance      = vm.envAddress("GOVERNANCE");
+        uint256 impactFeeBps    = vm.envUint("IMPACT_FEE_BPS");
 
-        console.log("=== Impact Fee Hook Deployment ===");
-        console.log("Pool Manager:", poolManager);
-        console.log("Vault Asset:", vaultAsset);
-        console.log("Donation Address:", donationAddress);
-        console.log("Governance:", governance);
-        console.log("Impact Fee:", IMPACT_FEE_BPS, "bps");
-        console.log("---");
+        console.log("PM:", poolManager);
+        console.log("Vault asset:", vaultAsset);
+        console.log("Donation receiver:", donationAddress);
+        console.log("Gov:", governance);
+        console.log("Impact fee (bps):", impactFeeBps);
 
-        // Start broadcasting transactions
         vm.startBroadcast();
 
-        // Step 1: Deploy YDS Vault
-        console.log("Deploying YDS Vault...");
+        // 1) Despliega un ERC4626 (YDSVault) para recibir fees
         YDSVault vault = new YDSVault(
             IERC20(vaultAsset),
             donationAddress,
             governance,
-            VAULT_NAME,
-            VAULT_SYMBOL
+            "Impact Vault",
+            "ivToken"
         );
-        console.log("YDS Vault deployed at:", address(vault));
+        IERC4626 feeSink = IERC4626(address(vault));
 
-        // Step 2: Calculate hook address with correct flags
-        // We need beforeSwap and beforeSwapReturnDelta permissions
-        address flags = address(
-            uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG) 
-            ^ (0x4444 << 144) // Namespace
-        );
-        console.log("Target hook address:", flags);
-
-        // Step 3: Deploy Impact Fee Hook to the calculated address
-        console.log("Deploying Impact Fee Hook...");
-        
-        // Note: In production, you'll need to use CREATE2 to deploy to the exact address
-        // For now, we'll deploy normally and you'll need to use the mining script
-        // See: https://github.com/uniswapfoundation/v4-template#hook-mining
-        
-        ImpactFeeHook hook = new ImpactFeeHook{salt: bytes32(uint256(0x4444))}(
-            IPoolManager(poolManager),
-            vault,
-            IMPACT_FEE_BPS,
-            governance
-        );
-        
-        console.log("Impact Fee Hook deployed at:", address(hook));
-
-        // Verify deployment
-        console.log("---");
-        console.log("Verifying deployment...");
-        
-        // Check vault configuration
-        require(vault.donationAddress() == donationAddress, "Invalid donation address");
-        require(vault.governance() == governance, "Invalid governance");
-        require(address(vault.asset()) == vaultAsset, "Invalid vault asset");
-        console.log("Vault configuration verified");
-
-        // Check hook configuration
-        require(address(hook.feeSink()) == address(vault), "Invalid fee sink reference");
-        require(hook.impactFeeBps() == IMPACT_FEE_BPS, "Invalid impact fee");
-        require(hook.owner() == governance, "Invalid owner");
-        console.log("Hook configuration verified");
-
-        vm.stopBroadcast();
-
-        // Output summary
-        console.log("---");
-        console.log("=== Deployment Complete ===");
-        console.log("YDS Vault:", address(vault));
-        console.log("Impact Fee Hook:", address(hook));
-        console.log("---");
-        console.log("Next Steps:");
-        console.log("1. Verify contracts on Etherscan");
-        console.log("2. Create a V4 pool with the hook");
-        console.log("3. Add liquidity to the pool");
-        console.log("4. Test with a swap");
-        console.log("---");
-        console.log("Pool Creation Example:");
-        console.log("  Currency currency0 = Currency.wrap(0x...)");
-        console.log("  Currency currency1 = Currency.wrap(0x...)");
-        console.log("  PoolKey memory key = PoolKey({");
-        console.log("    currency0: currency0,");
-        console.log("    currency1: currency1,");
-        console.log("    fee: 3000,");
-        console.log("    tickSpacing: 60,");
-        console.log("    hooks: IHooks(", address(hook), ")");
-        console.log("  });");
-        console.log("  poolManager.initialize(key, sqrtPriceX96);");
-    }
-}
-
-/**
- * @title DeployImpactFeeHookWithMining
- * @notice Extended deployment script with hook address mining
- * @dev This script mines for a valid hook address using CREATE2
- */
-contract DeployImpactFeeHookWithMining is Script {
-    uint256 constant IMPACT_FEE_BPS = 10;
-    string constant VAULT_NAME = "Impact Vault";
-    string constant VAULT_SYMBOL = "ivToken";
-
-    function run() external {
-        // Read environment variables
-        address poolManager = vm.envAddress("POOL_MANAGER");
-        address vaultAsset = vm.envAddress("VAULT_ASSET");
-        address donationAddress = vm.envAddress("DONATION_ADDRESS");
-        address governance = vm.envAddress("GOVERNANCE");
-
-        console.log("=== Mining Hook Address ===");
-        
-        // Calculate required flags
+        // 2) Flags necesarios: beforeSwap + beforeSwapReturnsDelta
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG);
-        
-        console.log("Required flags:", flags);
-        console.log("Mining for salt...");
-        
-        // In production, you would mine for a salt off-chain
-        // For hackathon purposes, we use a fixed salt
-        bytes32 salt = bytes32(uint256(0x4444));
-        
-        vm.startBroadcast();
 
-        // Deploy vault
-        YDSVault vault = new YDSVault(
-            IERC20(vaultAsset),
-            donationAddress,
+        // 3) Prepara constructor args del hook (ahora con donationReceiver)
+        bytes memory ctorArgs = abi.encode(
+            IPoolManager(poolManager),
+            feeSink,
+            impactFeeBps,
             governance,
-            VAULT_NAME,
-            VAULT_SYMBOL
+            donationAddress  // shares van al donation receiver
         );
 
-        // Deploy hook with CREATE2
+        // 4) Mina salt + dirección con HookMiner (sobre el deployer CREATE2 de Foundry)
+        (address predicted, bytes32 salt) = HookMiner.find(
+            CREATE2_DEPLOYER,
+            flags,
+            type(ImpactFeeHook).creationCode,
+            ctorArgs
+        );
+        console.log("Predicted hook addr:", predicted);
+
+        // 5) Deploy con CREATE2 y verifica que coincide la dirección
         ImpactFeeHook hook = new ImpactFeeHook{salt: salt}(
             IPoolManager(poolManager),
-            vault,
-            IMPACT_FEE_BPS,
-            governance
+            feeSink,
+            impactFeeBps,
+            governance,
+            donationAddress  // shares receiver
         );
+        require(address(hook) == predicted, "Hook address mismatch");
+        require((uint160(uint256(uint160(address(hook)))) & flags) == flags, "Flags not encoded");
 
         vm.stopBroadcast();
 
-        console.log("Vault:", address(vault));
-        console.log("Hook:", address(hook));
-        console.log("Hook flags match:", uint160(address(hook)) & flags == flags);
+        console.log("");
+        console.log("=== DEPLOYMENT SUCCESSFUL ===");
+        console.log("YDS Vault       :", address(vault));
+        console.log("ImpactHook      :", address(hook));
+        console.log("Donation Receiver:", donationAddress);
+        console.log("");
+        console.log("Vault shares will be sent to:", donationAddress);
     }
 }
