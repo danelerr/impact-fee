@@ -15,39 +15,13 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
 // OpenZeppelin Imports
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-// Custom Imports
-import {YDSVault} from "./YDSVault.sol";
 
 /**
  * @title ImpactFeeHook
- * @notice A Uniswap V4 Hook that automatically donates a portion of swap fees to Octant V2 YDS Vault
- * @dev Integrates Uniswap V4 with Octant's Yield Donating Strategy to fund public goods
- * 
- * Key Features:
- * - Intercepts swaps via beforeSwap hook with BeforeSwapDelta
- * - Correctly handles exactInput vs exactOutput semantics
- * - Collects impact fee as ERC6909 claims during swap
- * - Processes fees via unlock callback to convert claims to ERC20
- * - Deposits fees into YDSVault which mints donation shares to charity
- * 
- * Architecture:
- * - User swaps → beforeSwap() calculates fee on correct currency
- * - Hook takes fee as ERC6909 claims (stays in PoolManager)
- * - Returns BeforeSwapDelta (positive for input fee, negative for output fee)
- * - Later, processFees() converts claims to ERC20 via unlock callback
- * - Hook deposits ERC20 to YDSVault → charity receives shares
- * 
- * Safety Features:
- * - Address permission validation in constructor
- * - Safe int128 casting with overflow checks
- * - Pausability for emergency stops
- * - Per-pool fee overrides
- * - Dust guard to skip tiny fees
- * - Batch processing for gas efficiency
- * 
- * @custom:security-contact For Octant DeFi Hackathon 2025
+ * @notice Uniswap V4 hook that charges a small fee on swaps and deposits to an ERC4626 vault
+ * @dev Handles exactInput/exactOutput correctly, collects fees as ERC6909 claims, processes via unlock callback
  */
 contract ImpactFeeHook is BaseHook {
     using PoolIdLibrary for PoolKey;
@@ -59,11 +33,10 @@ contract ImpactFeeHook is BaseHook {
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice The YDS Vault that receives impact fees
-    YDSVault public immutable ydsVault;
+    /// @notice The ERC4626 vault that receives impact fees
+    IERC4626 public feeSink;
 
-    /// @notice Impact fee in basis points (e.g., 10 = 0.1%, 100 = 1%)
-    /// @dev uint16 saves gas and max value 65535 > MAX_IMPACT_FEE_BPS (500)
+    /// @notice Impact fee in basis points (10 = 0.1%, 100 = 1%)
     uint16 public impactFeeBps;
 
     /// @notice Owner/governance address
@@ -75,9 +48,7 @@ contract ImpactFeeHook is BaseHook {
     /// @notice Maximum impact fee (5% = 500 bps)
     uint256 public constant MAX_IMPACT_FEE_BPS = 500;
     
-    /// @notice Minimum fee to process (dust guard) - 1 wei/smallest unit
-    /// @dev Set to 1 to support tokens with different decimals (USDC=6, DAI=18, etc.)
-    /// @dev For production: consider per-currency dust thresholds via mapping
+    /// @notice Minimum fee to process (dust guard)
     uint256 public constant MIN_FEE_DUST = 1;
 
     /// @notice Tracks total fees collected per pool per currency
@@ -86,7 +57,7 @@ contract ImpactFeeHook is BaseHook {
     /// @notice Tracks total swaps per pool
     mapping(PoolId => uint256) public swapCount;
 
-    /// @notice Pending fees (as ERC6909 claims) from beforeSwap to be processed later
+    /// @notice Pending fees (ERC6909 claims) from beforeSwap awaiting processing
     mapping(PoolId => mapping(Currency => uint256)) internal _pendingFees;
     
     /// @notice Per-pool fee override (0 = use global impactFeeBps)
@@ -125,6 +96,10 @@ contract ImpactFeeHook is BaseHook {
     /// @param poolId Pool ID
     /// @param feeBps Fee in basis points (0 = use global)
     event PoolFeeSet(PoolId indexed poolId, uint16 feeBps);
+    
+    /// @notice Emitted when fee sink is updated (migration to new vault/strategy)
+    /// @param newSink New ERC4626 fee sink address
+    event FeeSinkUpdated(address indexed newSink);
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -153,22 +128,20 @@ contract ImpactFeeHook is BaseHook {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Initializes the Impact Fee Hook
+     * @notice Initializes the ImpactFeeHook
      * @param poolManager_ The Uniswap V4 PoolManager
-     * @param ydsVault_ The YDS Vault to receive donations
-     * @param impactFeeBps_ Initial impact fee in basis points (e.g., 10 = 0.1%)
+     * @param feeSink_ The ERC4626 vault to receive fees
+     * @param impactFeeBps_ Initial impact fee in basis points
      * @param owner_ The owner/governance address
      */
-    constructor(IPoolManager poolManager_, YDSVault ydsVault_, uint256 impactFeeBps_, address owner_)
+    constructor(IPoolManager poolManager_, IERC4626 feeSink_, uint256 impactFeeBps_, address owner_)
         BaseHook(poolManager_)
     {
-        // Validate hook address has correct permissions encoded in lower bits
-        // This ensures the hook was deployed to an address matching its permissions
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
         
         if (impactFeeBps_ > MAX_IMPACT_FEE_BPS) revert InvalidFee();
-        ydsVault = ydsVault_;
-        impactFeeBps = uint16(impactFeeBps_); // Safe cast: checked above
+        feeSink = feeSink_;
+        impactFeeBps = uint16(impactFeeBps_);
         owner = owner_;
     }
 
@@ -178,8 +151,7 @@ contract ImpactFeeHook is BaseHook {
 
     /**
      * @notice Returns the hook's permissions
-     * @dev We need beforeSwap with beforeSwapReturnDelta to collect fees as ERC6909 claims
-     * @dev These permissions must match the flags encoded in the hook's address
+     * @dev Requires beforeSwap with beforeSwapReturnDelta to collect fees as ERC6909 claims
      */
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
@@ -205,26 +177,10 @@ contract ImpactFeeHook is BaseHook {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Hook called before each swap
-     * @dev Collects impact fee as ERC6909 claims that can be processed later
-     * @dev Correctly handles exactInput vs exactOutput swap types
-     * @dev CRITICAL: Fee always charged in the currency of amountSpecified for dimensional correctness
-     * 
-     * ExactInput (amountSpecified < 0):
-     *   - User specifies exact input amount
-     *   - Fee charged on INPUT currency (same as amountSpecified currency)
-     *   - Positive delta on input (user pays more)
-     *   - feeAmount calculated from |amountSpecified|
-     * 
-     * ExactOutput (amountSpecified > 0):
-     *   - User specifies exact output amount  
-     *   - Fee charged on OUTPUT currency (same as amountSpecified currency)
-     *   - Negative delta on output (user receives less)
-     *   - feeAmount calculated from amountSpecified
-     * 
-     * This ensures fee = bps * amountSpecified in the correct currency units.
-     * Attempting to charge output fees in input currency would be dimensionally incorrect.
-     * 
+     * @notice Hook called before each swap to collect impact fee
+     * @dev Fee charged in currency of amountSpecified for dimensional correctness
+     * @dev ExactInput (amountSpecified < 0): fee on input, positive delta
+     * @dev ExactOutput (amountSpecified > 0): fee on output, negative delta
      * @param key The pool key
      * @param params The swap parameters
      * @return selector The function selector
@@ -242,23 +198,18 @@ contract ImpactFeeHook is BaseHook {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
         
-        // Determine exactInput vs exactOutput
         bool exactInput = params.amountSpecified < 0;
         
-        // Determine fee currency based on swap type
-        // CRITICAL: Always charge fee in the currency of amountSpecified for dimensional correctness
-        // - ExactInput: fee on INPUT currency (positive delta, user pays more input)
-        // - ExactOutput: fee on OUTPUT currency (negative delta, user receives less output)
+        // Fee charged in currency of amountSpecified
         Currency feeCurrency = exactInput
-            ? (params.zeroForOne ? key.currency0 : key.currency1) // Input currency
-            : (params.zeroForOne ? key.currency1 : key.currency0); // Output currency
+            ? (params.zeroForOne ? key.currency0 : key.currency1)
+            : (params.zeroForOne ? key.currency1 : key.currency0);
         
-        // Only charge fee if feeCurrency matches vault asset
-        if (ydsVault.asset() != Currency.unwrap(feeCurrency)) {
+        // Only charge fee if feeCurrency matches feeSink asset
+        if (feeSink.asset() != Currency.unwrap(feeCurrency)) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
-        // Get effective fee for this pool
         PoolId poolId = key.toId();
         uint16 feeBps = _getEffectiveFeeBps(poolId);
         if (feeBps == 0) {
@@ -282,7 +233,6 @@ contract ImpactFeeHook is BaseHook {
         // Take fee as ERC6909 claims
         feeCurrency.take(poolManager, address(this), feeAmount, true);
 
-        // Accrue pending fees
         unchecked {
             _pendingFees[poolId][feeCurrency] += feeAmount;
             swapCount[poolId]++;
@@ -290,10 +240,9 @@ contract ImpactFeeHook is BaseHook {
         
         emit ImpactFeeAccrued(poolId, feeCurrency, feeAmount, sender);
         
-        // Build BeforeSwapDelta: Fee applied to specified amount
-        // CRITICAL DIMENSIONAL CORRECTNESS:
-        // - ExactInput: positive delta on input (user pays more) -> negative=false
-        // - ExactOutput: negative delta on output (user receives less) -> negative=true
+        // Build BeforeSwapDelta
+        // ExactInput: positive delta on input
+        // ExactOutput: negative delta on output
         return (
             this.beforeSwap.selector, 
             toBeforeSwapDelta(
@@ -310,9 +259,6 @@ contract ImpactFeeHook is BaseHook {
 
     /**
      * @notice Process accumulated fees: convert ERC6909 claims to ERC20 and deposit to vault
-     * @dev Can be called by anyone (permissionless)
-     * @dev Converts all pending fees for a specific pool/currency pair
-     * @dev Uses unlock callback to ensure delta settlement
      * @param poolId The pool ID
      * @param currency The currency to process
      */
@@ -320,23 +266,17 @@ contract ImpactFeeHook is BaseHook {
         uint256 feeAmount = _pendingFees[poolId][currency];
         if (feeAmount == 0) return;
         
-        // Validate currency matches vault (safety check)
-        if (ydsVault.asset() != Currency.unwrap(currency)) revert CurrencyMismatch();
+        if (feeSink.asset() != Currency.unwrap(currency)) revert CurrencyMismatch();
 
-        // Clear pending fees before unlock to prevent reentrancy
         delete _pendingFees[poolId][currency];
 
-        // Encode the unlock callback data
         bytes memory unlockData = abi.encode(poolId, currency, feeAmount);
         
-        // Execute burn/take inside unlock callback
-        // This opens a fresh unlock context where we can net deltas to zero
         poolManager.unlock(unlockData);
     }
     
     /**
      * @notice Process fees for multiple pool/currency pairs in batch
-     * @dev Gas-efficient way to process multiple pending fees
      * @param poolIds Array of pool IDs
      * @param currencies Array of currencies (must match poolIds length)
      */
@@ -351,41 +291,29 @@ contract ImpactFeeHook is BaseHook {
 
     /**
      * @notice Unlock callback to process fees
-     * @dev Called by PoolManager during unlock
      * @dev Burns ERC6909 claims and takes ERC20, netting deltas to zero
-     * @dev This is the ONLY place where we should call unlock-dependent operations
-     * 
-     * Delta accounting:
-     * - burn() creates -feeAmount delta (we destroy claims)
-     * - take() creates +feeAmount delta (we extract ERC20)
-     * - Net: -feeAmount + feeAmount = 0 ✅ (settlement successful)
-     * 
      * @param data Encoded (poolId, currency, feeAmount)
-     * @return Empty bytes (unused)
+     * @return Empty bytes
      */
     function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
         (PoolId poolId, Currency currency, uint256 feeAmount) = abi.decode(data, (PoolId, Currency, uint256));
 
-        // Burn ERC6909 claims (creates -feeAmount delta)
         poolManager.burn(address(this), currency.toId(), feeAmount);
         
-        // Take ERC20 tokens from PoolManager (creates +feeAmount delta)
-        // Net delta: -feeAmount + feeAmount = 0 ✅
         poolManager.take(currency, address(this), feeAmount);
 
-        // Approve vault to spend the tokens
-        IERC20(Currency.unwrap(currency)).forceApprove(address(ydsVault), feeAmount);
+        address token = Currency.unwrap(currency);
+        
+        if (feeSink.asset() != token) revert CurrencyMismatch();
 
-        // Deposit to vault (mints shares to address(this), which should be donation address)
-        // The vault will mint shares to its configured donation address
-        ydsVault.deposit(feeAmount, address(this));
+        IERC20(token).forceApprove(address(feeSink), feeAmount);
+        
+        feeSink.deposit(feeAmount, address(this));
 
-        // Update tracking
         unchecked { 
             feesCollected[poolId][currency] += feeAmount; 
         }
 
-        // Emit event (no swapper since this is batch processing)
         emit ImpactFeeCollected(poolId, currency, feeAmount);
 
         return "";
@@ -434,6 +362,18 @@ contract ImpactFeeHook is BaseHook {
         _poolFeeOverride[poolId] = feeBps;
         emit PoolFeeSet(poolId, feeBps);
     }
+    
+    /**
+     * @notice Set the fee sink
+     * @dev Validates that new sink uses same asset
+     * @param newSink New ERC4626 vault to receive fees
+     */
+    function setFeeSink(IERC4626 newSink) external {
+        if (msg.sender != owner) revert Unauthorized();
+        if (newSink.asset() != feeSink.asset()) revert CurrencyMismatch();
+        feeSink = newSink;
+        emit FeeSinkUpdated(address(newSink));
+    }
 
     /*//////////////////////////////////////////////////////////////
                         VIEW FUNCTIONS
@@ -473,8 +413,7 @@ contract ImpactFeeHook is BaseHook {
     }
 
     /**
-     * @notice Returns pending fees (as ERC6909 claims) for a pool/currency
-     * @dev These fees have been accrued but not yet processed
+     * @notice Returns pending fees for a pool/currency
      * @param poolId The pool ID
      * @param currency The currency to query
      * @return The pending fee amount
@@ -489,13 +428,11 @@ contract ImpactFeeHook is BaseHook {
     
     /**
      * @notice Safely cast uint256 to int128 with optional negation
-     * @dev Prevents overflow when constructing BeforeSwapDelta
      * @param value Value to cast
      * @param negative Whether to negate the result
      * @return Result as int128
      */
     function _safeToInt128(uint256 value, bool negative) internal pure returns (int128) {
-        // Check if value fits in int128 positive range (2^127 - 1)
         if (value > uint128(type(int128).max)) revert Int128Overflow();
         
         int128 result = int128(uint128(value));
@@ -503,8 +440,7 @@ contract ImpactFeeHook is BaseHook {
     }
     
     /**
-     * @notice Get effective fee for a pool (internal)
-     * @dev Checks per-pool override first, falls back to global
+     * @notice Get effective fee for a pool
      * @param poolId Pool ID
      * @return Effective fee in basis points
      */
@@ -513,7 +449,6 @@ contract ImpactFeeHook is BaseHook {
         if (override_ > 0) {
             return override_;
         }
-        // Safe cast: impactFeeBps is constrained to MAX_IMPACT_FEE_BPS (500)
         return uint16(impactFeeBps);
     }
 }

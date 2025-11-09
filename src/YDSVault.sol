@@ -8,20 +8,8 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 
 /**
  * @title YDSVault
- * @notice A simplified Yield Donating Strategy (YDS) vault for the Octant V2 integration
- * @dev This vault automatically mints donation shares to a designated charity address when deposits are made.
- * 
- * Key Features:
- * - Inherits from ERC4626 standard vault interface
- * - Automatically donates yield by minting shares to a charity address
- * - Designed to integrate with Uniswap V4 ImpactFeeHook
- * 
- * Architecture:
- * - ImpactFeeHook calls deposit() with swap fees
- * - YDSVault mints donation shares to the donationAddress
- * - Donation shares represent claims on future yield
- * 
- * @custom:security-contact For Octant DeFi Hackathon 2025
+ * @notice Simplified ERC4626 vault that automatically donates shares to a designated address
+ * @dev Integrates with ImpactFeeHook to receive swap fees and mint donation shares
  */
 contract YDSVault is ERC4626 {
     using SafeERC20 for IERC20;
@@ -30,13 +18,13 @@ contract YDSVault is ERC4626 {
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice The address that receives donation shares (the charity/public good)
+    /// @notice The address that receives donation shares
     address public donationAddress;
 
-    /// @notice The address authorized to update the donation address (governance/admin)
+    /// @notice The address authorized to update settings
     address public immutable governance;
 
-    /// @notice Total assets deposited through the ImpactFeeHook
+    /// @notice Total assets deposited
     uint256 public totalDonatedAssets;
 
     /*//////////////////////////////////////////////////////////////
@@ -70,11 +58,11 @@ contract YDSVault is ERC4626 {
 
     /**
      * @notice Initializes the YDS Vault
-     * @param asset_ The underlying ERC20 asset to be deposited (e.g., USDC, DAI)
-     * @param donationAddress_ The initial address to receive donation shares
-     * @param governance_ The governance address that can update settings
-     * @param name_ The name of the vault token (e.g., "Octant Impact Vault USDC")
-     * @param symbol_ The symbol of the vault token (e.g., "oivUSDC")
+     * @param asset_ The underlying ERC20 asset
+     * @param donationAddress_ The address to receive donation shares
+     * @param governance_ The governance address
+     * @param name_ The vault token name
+     * @param symbol_ The vault token symbol
      */
     constructor(
         IERC20 asset_,
@@ -93,37 +81,24 @@ contract YDSVault is ERC4626 {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Deposits assets and automatically mints shares to the donation address
-     * @dev This function is called by the ImpactFeeHook when swap fees are collected
-     * @param assets The amount of assets to deposit
-     * @param receiver The address that initiated the deposit (for tracking/events)
-     * @return shares The amount of shares minted to the donation address
-     * 
-     * Flow:
-     * 1. Transfer assets from caller (ImpactFeeHook) to vault
-     * 2. Calculate shares based on current exchange rate
-     * 3. Mint shares to donationAddress (not to receiver)
-     * 4. Emit DonationMade event
+     * @notice Deposits assets and mints shares to donation address
+     * @param assets Amount of assets to deposit
+     * @param receiver Address that initiated the deposit (for tracking)
+     * @return shares Amount of shares minted to donation address
      */
     function deposit(uint256 assets, address receiver) public virtual override returns (uint256) {
-        // Check deposit limits (inherited from ERC4626)
         if (assets > maxDeposit(receiver)) {
             revert ERC4626ExceededMaxDeposit(receiver, assets, maxDeposit(receiver));
         }
 
-        // Calculate shares to mint
         uint256 shares = previewDeposit(assets);
 
-        // Transfer assets from depositor to vault
         SafeERC20.safeTransferFrom(IERC20(asset()), msg.sender, address(this), assets);
 
-        // Mint shares to the donation address (not to receiver!)
         _mint(donationAddress, shares);
 
-        // Update total donated assets
         totalDonatedAssets += assets;
 
-        // Emit events
         emit Deposit(msg.sender, donationAddress, assets, shares);
         emit DonationMade(msg.sender, assets, shares);
 
@@ -132,9 +107,8 @@ contract YDSVault is ERC4626 {
 
     /**
      * @notice Deposits exact amount of assets and mints shares to donation address
-     * @dev Alternative deposit function for convenience
-     * @param assets The amount of assets to deposit
-     * @return shares The amount of shares minted
+     * @param assets Amount of assets to deposit
+     * @return shares Amount of shares minted
      */
     function depositForDonation(uint256 assets) external returns (uint256 shares) {
         return deposit(assets, msg.sender);
@@ -146,8 +120,7 @@ contract YDSVault is ERC4626 {
 
     /**
      * @notice Updates the donation address
-     * @dev Only callable by governance
-     * @param newDonationAddress The new address to receive donation shares
+     * @param newDonationAddress New address to receive donation shares
      */
     function setDonationAddress(address newDonationAddress) external {
         if (msg.sender != governance) revert Unauthorized();
@@ -165,7 +138,6 @@ contract YDSVault is ERC4626 {
 
     /**
      * @notice Returns the total assets held by the vault
-     * @dev Override to include any yield strategy logic in the future
      * @return Total assets in the vault
      */
     function totalAssets() public view virtual override returns (uint256) {
